@@ -150,6 +150,11 @@ contract Nova is ERC20, Ownable, TimeLock {
         );
     }
 
+    function burnTokens(uint256 amount) external {
+        require(amount > 0, "Cannot burn 0 tokens!");
+        _burn(msg.sender, amount);
+    }
+
     function convert(uint256 amount) external {
         require(oldToken.transferFrom(msg.sender, address(this), amount), "Transfer of old tokens failed");
         require(oldToken.transfer(DEAD, amount), "Burning old tokens failed");
