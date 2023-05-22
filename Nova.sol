@@ -14,11 +14,8 @@ contract Nova is ERC20, Ownable, TimeLock {
     string constant private _symbol = "NOVA";
     uint256 constant private _decimals = 18;
     address constant public DEAD = 0x000000000000000000000000000000000000dEaD;
-
-    IERC20 immutable public oldToken; //assumes 9 Decimal Token
-    uint256 immutable public tokenConversionDeadline;
     
-    address public daoWallet = 0x587C94eb789c69033A5888b2CBD6dD3afc902D8C;
+    address public daoWallet = 0x47C5aA82fDA7A79C7965BeB6d7c6a265FE59921b;
     uint256 public taxForLiquidity = 1;
     uint256 public taxForDao = 2;
     uint256 public _daoReserves = 0;
@@ -54,23 +51,20 @@ contract Nova is ERC20, Ownable, TimeLock {
         inSwapAndLiquify = false;
     }
 
-    constructor(address _router, address _oldToken) ERC20(_name, _symbol) {
-        oldToken = IERC20(_oldToken);
-        tokenConversionDeadline = block.timestamp + 90 days;
+    constructor(address _router) ERC20(_name, _symbol) {
         IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(_router);
         uniswapV2Pair = IUniswapV2Factory(_uniswapV2Router.factory()).createPair(address(this), _uniswapV2Router.WETH());
 
         uniswapV2Router = _uniswapV2Router;
+        _approve(address(this), address(uniswapV2Router), type(uint256).max);
 
         isExcludedFromFee[address(uniswapV2Router)] = true;
         isExcludedFromFee[msg.sender] = true;
         isExcludedFromFee[daoWallet] = true;
         isLiquidityPair[uniswapV2Pair] = true;
-    }
 
-    function mint(address to, uint256 amount) public onlyOwner withTimelock("mint") {
-        require(amount <= totalSupply() / 10, "Max mint exceeded: Cannot mint greater than 10% of totalSupply.");
-        _mint(to, amount);
+        _mint(msg.sender, 1_000_000_000 * 10**_decimals); //existing supply for token conversions
+        _mint(daoWallet, 400_000_000 * 10**_decimals); //new supply for DAO ownership
     }
 
     function _transfer(address from, address to, uint256 amount) internal override {
@@ -150,22 +144,13 @@ contract Nova is ERC20, Ownable, TimeLock {
         );
     }
 
-    function burnTokens(uint256 amount) external {
+    function burn(uint256 amount) external {
         require(amount > 0, "Cannot burn 0 tokens!");
         _burn(msg.sender, amount);
     }
 
-    function convert(uint256 amount) external {
-        require(oldToken.transferFrom(msg.sender, address(this), amount), "Transfer of old tokens failed");
-        require(oldToken.transfer(DEAD, amount), "Burning old tokens failed");
-        require(block.timestamp <= tokenConversionDeadline, "Conversion period has ended");
-
-        // Convert to equivalent amount of new tokens, accounting for 9dec -> 18dec conversion
-        _mint(msg.sender, amount * 10**9);
-    }
-
     function updateRouterPair(address _router, address _pair) external onlyOwner withTimelock("updateRouterPair") {
-        require(_pair != DEAD && _pair != address(0), "Router cannot be the Dead wallet, or 0!");
+        require(_pair != DEAD && _pair != address(0), "Router cannot be the Dead address, or 0!");
 
         IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(_router);
         uniswapV2Pair = _pair;
@@ -180,7 +165,7 @@ contract Nova is ERC20, Ownable, TimeLock {
 
     function changeDaoWallet(address newWallet) external onlyOwner
     {
-        require(newWallet != DEAD && newWallet != address(0), "DAO Wallet cannot be the Dead wallet, or 0!");
+        require(newWallet != DEAD && newWallet != address(0), "DAO Wallet cannot be the Dead address, or 0!");
         daoWallet = newWallet;
         emit DaoWalletUpdated(daoWallet);
     }
