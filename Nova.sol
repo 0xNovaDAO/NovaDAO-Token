@@ -16,6 +16,7 @@ contract Nova is ERC20, Ownable, TimeLock {
     address constant public DEAD = 0x000000000000000000000000000000000000dEaD;
     
     address public daoWallet = 0x47C5aA82fDA7A79C7965BeB6d7c6a265FE59921b;
+    uint256 public allowedSlippage = 0;
     uint256 public taxForLiquidity = 1;
     uint256 public taxForDao = 2;
     uint256 public _daoReserves = 0;
@@ -31,8 +32,8 @@ contract Nova is ERC20, Ownable, TimeLock {
     event TaxAmountsUpdated(uint _liquidity, uint _dao);
     event DaoWalletUpdated(address _address);
     event SwapThresholdsChanged(uint _lpSwapThreshold, uint _daoSwapThreshold);
-    event MaxTxAmountUpdated(uint _maxTxAmount);
-    event MaxWalletBalanceUpdated(uint _maxWalletBalance);
+    event DaoTransferFailed(address _daoWallet, uint _amount);
+    event SlippageLimitUpdated(uint _allowedSlippage);
     
     IUniswapV2Router02 public uniswapV2Router;
     address public uniswapV2Pair;
@@ -52,6 +53,7 @@ contract Nova is ERC20, Ownable, TimeLock {
     }
 
     constructor(address _router) ERC20(_name, _symbol) {
+        require(_router != DEAD && _router != address(0), "Router cannot be the Dead address, or 0!");
         IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(_router);
         uniswapV2Pair = IUniswapV2Factory(_uniswapV2Router.factory()).createPair(address(this), _uniswapV2Router.WETH());
 
@@ -72,6 +74,8 @@ contract Nova is ERC20, Ownable, TimeLock {
         require(to != address(0), "ERC20: transfer to the zero address");
         require(balanceOf(from) >= amount, "ERC20: transfer amount exceeds balance");
 
+        bool _isSendingDaoTokens = false;
+
         if ((isLiquidityPair[from] || isLiquidityPair[to]) && !inSwapAndLiquify) {
             if (!isLiquidityPair[from]) {
                 uint256 contractLiquidityBalance = balanceOf(address(this)) - _daoReserves;
@@ -81,7 +85,7 @@ contract Nova is ERC20, Ownable, TimeLock {
                 if ((_daoReserves) >= numTokensSellToAddToETH) {
                     _swapTokensForEth(numTokensSellToAddToETH);
                     _daoReserves -= numTokensSellToAddToETH;
-                    payable(daoWallet).transfer(address(this).balance);
+                    _isSendingDaoTokens = true;
                 }
             }
 
@@ -101,6 +105,13 @@ contract Nova is ERC20, Ownable, TimeLock {
         } 
         else {
             super._transfer(from, to, amount);
+        }
+
+        if (_isSendingDaoTokens) {
+            (bool success, ) = payable(daoWallet).call{value: address(this).balance}("");
+            if(!success) {
+                emit DaoTransferFailed(daoWallet, address(this).balance);
+            }
         }
     }
 
@@ -124,9 +135,11 @@ contract Nova is ERC20, Ownable, TimeLock {
         path[0] = address(this);
         path[1] = uniswapV2Router.WETH();
 
+        uint256 minEthOut = calculateMinimumETHFromTokenSwap(tokenAmount);
+        
         uniswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(
             tokenAmount,
-            0,
+            minEthOut,
             path,
             address(this),
             block.timestamp
@@ -149,16 +162,21 @@ contract Nova is ERC20, Ownable, TimeLock {
         _burn(msg.sender, amount);
     }
 
-    function updateRouterPair(address _router, address _pair) external onlyOwner withTimelock("updateRouterPair") {
-        require(_pair != DEAD && _pair != address(0), "Router cannot be the Dead address, or 0!");
+    function updateRouter(address _router) external onlyOwner withTimelock("updateRouterPair") {
+        require(_router != DEAD && _router != address(0), "Router cannot be the Dead address, or 0!");
 
         IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(_router);
+        address _pair = IUniswapV2Factory(_uniswapV2Router.factory())
+            .getPair(address(this), _uniswapV2Router.WETH());
+
+        require(_pair != DEAD && _pair != address(0), "Pair cannot be the Dead address, or 0!");
+
         uniswapV2Pair = _pair;
         uniswapV2Router = _uniswapV2Router;
 
         isExcludedFromFee[address(uniswapV2Router)] = true;
         isLiquidityPair[uniswapV2Pair] = true;
-        
+
         _approve(address(this), address(uniswapV2Router), type(uint256).max);
         emit PrimaryRouterPairUpdated(_router, _pair);
     }
@@ -195,6 +213,7 @@ contract Nova is ERC20, Ownable, TimeLock {
     }
 
     function updatePairStatus(address _pair, bool _status) external onlyOwner {
+        require(isContract(_pair), "Address must be a contract");
         isLiquidityPair[_pair] = _status;
         emit AddedLiquidityPair(_pair, _status);
     }
@@ -202,6 +221,51 @@ contract Nova is ERC20, Ownable, TimeLock {
     function excludeFromFee(address _address, bool _status) external onlyOwner {
         isExcludedFromFee[_address] = _status;
         emit ExcludedFromFeeUpdated(_address, _status);
+    }
+
+    function disableSlippageLimit() external onlyOwner {
+        allowedSlippage = 0;
+        emit SlippageLimitUpdated(allowedSlippage);
+    }
+
+    function setSlippageLimit(uint256 _allowedSlippage) external onlyOwner {
+        require(_allowedSlippage > 0 && _allowedSlippage <= 99, "Slippage limit must be between 1% and 99%");
+        allowedSlippage = _allowedSlippage;
+        emit SlippageLimitUpdated(allowedSlippage);
+    }
+
+    function calculateMinimumETHFromTokenSwap(uint256 tokenAmount) public view returns (uint256) {
+        if (allowedSlippage == 0) {
+            return 0;
+        }
+
+        require(uniswapV2Pair != address(0), "Token-ETH pair does not exist");
+
+        IUniswapV2Pair pair = IUniswapV2Pair(uniswapV2Pair);
+        (uint112 reserve0, uint112 reserve1,) = pair.getReserves();
+
+        uint256 tokenReserve;
+        uint256 ethReserve;
+        if (pair.token0() == address(this)) {
+            tokenReserve = reserve0;
+            ethReserve = reserve1;
+        } else {
+            tokenReserve = reserve1;
+            ethReserve = reserve0;
+        }
+
+        uint256 ethOut = uniswapV2Router.getAmountOut(tokenAmount, tokenReserve, ethReserve);
+        uint256 minEthOut = (ethOut * (1000 - allowedSlippage)) / 1000;
+
+        return minEthOut;
+    }
+
+    function isContract(address _addr) internal view returns (bool) {
+        uint32 size;
+        assembly {
+            size := extcodesize(_addr)
+        }
+        return (size > 0);
     }
 
     receive() external payable {}
