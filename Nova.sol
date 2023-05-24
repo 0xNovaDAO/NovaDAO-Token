@@ -228,7 +228,7 @@ contract Nova is ERC20, Ownable, TimeLock {
         emit SlippageLimitUpdated(allowedSlippage);
     }
 
-    function setSlippageLimit(uint256 _allowedSlippage) external onlyOwner {
+    function setSlippageLimit(uint256 _allowedSlippage) external onlyOwner withTimelock("setSlippageLimit") {
         require(_allowedSlippage > 0 && _allowedSlippage <= 99, "Slippage limit must be between 1% and 99%");
         allowedSlippage = _allowedSlippage;
         emit SlippageLimitUpdated(allowedSlippage);
