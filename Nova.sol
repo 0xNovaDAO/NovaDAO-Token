@@ -15,7 +15,7 @@ contract Nova is ERC20, Ownable, TimeLock {
     uint256 constant private _decimals = 18;
     address constant public DEAD = 0x000000000000000000000000000000000000dEaD;
     
-    address public daoWallet = 0x47C5aA82fDA7A79C7965BeB6d7c6a265FE59921b;
+    address public daoWallet;
     uint256 public allowedSlippage = 0;
     uint256 public taxForLiquidity = 1;
     uint256 public taxForDao = 2;
@@ -52,19 +52,21 @@ contract Nova is ERC20, Ownable, TimeLock {
         inSwapAndLiquify = false;
     }
 
-    constructor(address _router) ERC20(_name, _symbol) {
+    constructor(address _router, address _daoWallet) ERC20(_name, _symbol) {
         require(_router != DEAD && _router != address(0), "Router cannot be the Dead address, or 0!");
+        require(_daoWallet != DEAD && _daoWallet != address(0), "DAO Wallet cannot be the Dead address, or 0!");
         IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(_router);
         uniswapV2Pair = IUniswapV2Factory(_uniswapV2Router.factory()).createPair(address(this), _uniswapV2Router.WETH());
-
+        
         uniswapV2Router = _uniswapV2Router;
         _approve(address(this), address(uniswapV2Router), type(uint256).max);
+        daoWallet = address(_daoWallet);
 
         isExcludedFromFee[address(uniswapV2Router)] = true;
         isExcludedFromFee[msg.sender] = true;
         isExcludedFromFee[daoWallet] = true;
         isLiquidityPair[uniswapV2Pair] = true;
-
+        
         _mint(msg.sender, 1_000_000_000 * 10**_decimals); //existing supply for token conversions
         _mint(daoWallet, 400_000_000 * 10**_decimals); //new supply for DAO ownership
     }
@@ -76,13 +78,15 @@ contract Nova is ERC20, Ownable, TimeLock {
 
         bool _isSendingDaoTokens = false;
 
-        if ((isLiquidityPair[from] || isLiquidityPair[to]) && !inSwapAndLiquify) {
+        if ((isLiquidityPair[from] || isLiquidityPair[to]) 
+        && taxForDao + taxForLiquidity > 0 
+        && !inSwapAndLiquify) {
             if (!isLiquidityPair[from]) {
                 uint256 contractLiquidityBalance = balanceOf(address(this)) - _daoReserves;
                 if (contractLiquidityBalance >= numTokensSellToAddToLiquidity) {
                     _swapAndLiquify(numTokensSellToAddToLiquidity);
                 }
-                if ((_daoReserves) >= numTokensSellToAddToETH) {
+                if (_daoReserves >= numTokensSellToAddToETH) {
                     _swapTokensForEth(numTokensSellToAddToETH);
                     _daoReserves -= numTokensSellToAddToETH;
                     _isSendingDaoTokens = true;
