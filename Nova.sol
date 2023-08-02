@@ -33,7 +33,6 @@ contract Nova is ERC20, Ownable, TimeLock {
     event DaoWalletUpdated(address _address);
     event SwapThresholdsChanged(uint _lpSwapThreshold, uint _daoSwapThreshold);
     event DaoTransferFailed(address _daoWallet, uint _amount);
-    event SlippageLimitUpdated(uint _allowedSlippage);
     
     IUniswapV2Router02 public uniswapV2Router;
     address public uniswapV2Pair;
@@ -76,11 +75,11 @@ contract Nova is ERC20, Ownable, TimeLock {
         require(to != address(0), "ERC20: transfer to the zero address");
         require(balanceOf(from) >= amount, "ERC20: transfer amount exceeds balance");
 
-        bool _isSendingDaoTokens = false;
-
         if ((isLiquidityPair[from] || isLiquidityPair[to]) 
         && taxForDao + taxForLiquidity > 0 
         && !inSwapAndLiquify) {
+            bool _isSendingDaoTokens = false;
+
             if (!isLiquidityPair[from]) {
                 uint256 contractLiquidityBalance = balanceOf(address(this)) - _daoReserves;
                 if (contractLiquidityBalance >= numTokensSellToAddToLiquidity) {
@@ -106,16 +105,16 @@ contract Nova is ERC20, Ownable, TimeLock {
                 super._transfer(from, address(this), (daoShare + liquidityShare));
             }
             super._transfer(from, to, transferAmount);
+
+            if (_isSendingDaoTokens) {
+                (bool success, ) = payable(daoWallet).call{value: address(this).balance}("");
+                if(!success) {
+                    emit DaoTransferFailed(daoWallet, address(this).balance);
+                }
+            }
         } 
         else {
             super._transfer(from, to, amount);
-        }
-
-        if (_isSendingDaoTokens) {
-            (bool success, ) = payable(daoWallet).call{value: address(this).balance}("");
-            if(!success) {
-                emit DaoTransferFailed(daoWallet, address(this).balance);
-            }
         }
     }
 
@@ -138,12 +137,10 @@ contract Nova is ERC20, Ownable, TimeLock {
         address[] memory path = new address[](2);
         path[0] = address(this);
         path[1] = uniswapV2Router.WETH();
-
-        uint256 minEthOut = calculateMinimumETHFromTokenSwap(tokenAmount);
         
         uniswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(
             tokenAmount,
-            minEthOut,
+            0,
             path,
             address(this),
             block.timestamp
@@ -225,43 +222,6 @@ contract Nova is ERC20, Ownable, TimeLock {
     function excludeFromFee(address _address, bool _status) external onlyOwner {
         isExcludedFromFee[_address] = _status;
         emit ExcludedFromFeeUpdated(_address, _status);
-    }
-
-    function disableSlippageLimit() external onlyOwner {
-        allowedSlippage = 0;
-        emit SlippageLimitUpdated(allowedSlippage);
-    }
-
-    function setSlippageLimit(uint256 _allowedSlippage) external onlyOwner withTimelock("setSlippageLimit") {
-        require(_allowedSlippage > 0 && _allowedSlippage <= 99, "Slippage limit must be between 1% and 99%");
-        allowedSlippage = _allowedSlippage;
-        emit SlippageLimitUpdated(allowedSlippage);
-    }
-
-    function calculateMinimumETHFromTokenSwap(uint256 tokenAmount) public view returns (uint256) {
-        if (allowedSlippage == 0) {
-            return 0;
-        }
-
-        require(uniswapV2Pair != address(0), "Token-ETH pair does not exist");
-
-        IUniswapV2Pair pair = IUniswapV2Pair(uniswapV2Pair);
-        (uint112 reserve0, uint112 reserve1,) = pair.getReserves();
-
-        uint256 tokenReserve;
-        uint256 ethReserve;
-        if (pair.token0() == address(this)) {
-            tokenReserve = reserve0;
-            ethReserve = reserve1;
-        } else {
-            tokenReserve = reserve1;
-            ethReserve = reserve0;
-        }
-
-        uint256 ethOut = uniswapV2Router.getAmountOut(tokenAmount, tokenReserve, ethReserve);
-        uint256 minEthOut = (ethOut * (1000 - allowedSlippage)) / 1000;
-
-        return minEthOut;
     }
 
     function isContract(address _addr) internal view returns (bool) {
