@@ -62,6 +62,7 @@ contract Nova is ERC20, Ownable, TimeLock {
 
         isExcludedFromFee[address(uniswapV2Router)] = true;
         isExcludedFromFee[msg.sender] = true;
+        isExcludedFromFee[daoWallet] = true;
         isLiquidityPair[uniswapV2Pair] = true;
         
         _mint(msg.sender, 1_000_000_000 * 10**_decimals); //existing supply for token conversions
